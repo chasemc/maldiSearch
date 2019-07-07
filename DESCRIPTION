@@ -1,0 +1,13 @@
+Package: maldiSearch
+Type: Package
+Title: Temporary repository for a function that will eventually be incorporated into IDBac
+Version: 0.0.0
+Author: Chase Clark
+Maintainer: The package maintainer <yourself@somewhere.net>
+Description: More about what it does (maybe more than one line)
+    Use four spaces when indenting paragraphs within the Description.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: true
+Imports: 
+    IDBacApp

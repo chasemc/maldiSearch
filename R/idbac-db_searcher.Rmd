@@ -1,0 +1,216 @@
+---
+title: "MALDI BLAST"
+output: html_document
+params:
+    queryPath: NULL
+    queryDBName: NULL
+    subjectPath: NULL
+    subjectDBName: NULL
+    querySampleIDs: NULL
+    subjectSampleIDs: NULL
+    peakPercentPresence: NULL    
+    lowerMassCutoff: NULL    
+    upperMassCutoff: NULL    
+    minSNR: NULL    
+    tolerance: NULL  
+    nResults: 5L  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+
+```{r message=FALSE, warning=FALSE}
+library(archive)
+library(readxl)
+library(dplyr)
+```
+
+
+
+```{r database-pool}
+queryPool <- IDBacApp::createPool(params$queryDBName,
+                                  params$queryPath)[[1]]
+subjectPool <- IDBacApp::createPool(params$subjectDBName,
+                                    params$subjectPath)[[1]]
+
+queryConn <- pool::poolCheckout(queryPool)
+subjectConn <- pool::poolCheckout(subjectPool)
+
+
+```
+
+```{r set-names}
+queryNames <- params$ querySampleIDs
+subjectNames <- params$subjectSampleIDs
+```
+
+
+
+```{r}
+if (is.null(subjectNames)) {
+  message("Querying entirety of subject database.")
+  
+  subjectNames <- DBI::dbGetQuery(subjectPool,
+                                  glue::glue("SELECT DISTINCT Strain_ID
+                                            FROM IndividualSpectra
+                                            WHERE maxMass > 6000"))
+  subjectNames <- subjectNames[ , 1]
+  
+}
+```
+
+
+
+
+
+```{r}
+
+queryData <- IDBacApp::collapseReplicates(checkedPool = queryConn, 
+                                          sampleIDs = queryNames,
+                                          peakPercentPresence = params$peakPercentPresence,
+                                          lowerMassCutoff = params$lowerMassCutoff,
+                                          upperMassCutoff = params$upperMassCutoff,
+                                          minSNR = params$minSNR,
+                                          tolerance = params$tolerance,
+                                          protein = T)
+
+subjectData <- lapply(subjectNames,
+                      function(x){
+                        IDBacApp::collapseReplicates(checkedPool = subjectConn, 
+                                                     sampleIDs = x,
+                                                     peakPercentPresence = params$peakPercentPresence,
+                                                     lowerMassCutoff = params$lowerMassCutoff,
+                                                     upperMassCutoff = params$upperMassCutoff,
+                                                     minSNR = params$minSNR,
+                                                     tolerance = params$tolerance,
+                                                     protein = T)
+                      })
+
+
+pool::poolReturn(queryConn)
+pool::poolReturn(subjectConn)
+```
+
+
+
+
+```{r, calculate-similarities}
+massOne <- list(queryData@mass)
+massAll <- lapply(subjectData, function(x) x@mass)
+# remove any with no masses
+remo <- lengths(massAll) != 0
+massAll <- massAll[ -remo ]
+intOne <- queryData@intensity
+intAll <- lapply(subjectData, function(x) x@intensity)
+
+
+z <- IDBacApp::peakBinner(massStart = 3000,
+                          massEnd = 15000,
+                          ppm = 3000,
+                          massList = c(massOne, massAll),
+                          intensityList = c(intOne, intAll))
+z <- coop::tcosine(z)
+```
+
+
+```{r, rank-matches}
+matches <- z[-1, 1]
+
+ranking <- order(matches, decreasing = T)
+
+```
+
+
+
+
+
+```{r}
+subjectNames <- subjectNames[-remo][ranking][1:params$nResults]
+matches <- matches[ranking][1:params$nResults]
+```
+
+
+
+```{r}
+
+
+ query <-  DBI::dbSendStatement(subjectConn,
+                                "SELECT DISTINCT Genus
+                                FROM metaData
+                                WHERE Strain_ID = ?")
+
+
+  
+  
+  DBI::dbBind(query, list(as.character(as.vector(subjectNames))))
+  result <- DBI::dbFetch(query)
+
+
+  result <- gsub("[\r\n]", "", result$Genus)
+```
+
+
+
+```{r table-results, message=FALSE, warning=FALSE}
+
+knitr::kable(
+  data.frame("Subject" = subjectNames,
+             "Subject Genus" = result,
+             "Cosine Similarity" = matches),
+  booktabs = TRUE,
+  caption = glue::glue("Results for Query: {queryNames}"),
+  align = 'l'
+)
+
+```
+
+
+```{r assemble-mirror, message=FALSE, warning=FALSE}
+p <- lapply(subjectNames,
+            function(x){
+              
+              IDBacApp::assembleMirrorPlots(sampleID1 = queryNames,
+                                            sampleID2 = x,
+                                            peakPercentPresence = params$peakPercentPresence,
+                                            lowerMassCutoff = params$lowerMassCutoff,
+                                            upperMassCutoff = params$upperMassCutoff,
+                                            minSNR = params$minSNR,
+                                            tolerance = params$tolerance,
+                                            pool1 = queryPool,
+                                            pool2 = subjectPool)
+            }
+)
+```
+
+
+
+
+
+
+```{r message=FALSE, warning=FALSE}
+
+p <- lapply(p,
+            function(x){
+              IDBacApp::mirrorPlot(mirrorPlotEnv = x)
+            }
+)
+
+plotly::subplot(p,
+                nrows = params$nResults,
+                shareX = TRUE)
+
+```
+
+
+
+
+
+```{r}
+pool::poolClose(queryPool)
+pool::poolClose(subjectPool)
+```
+
+
